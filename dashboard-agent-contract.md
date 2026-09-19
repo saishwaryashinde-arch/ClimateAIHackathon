@@ -22,6 +22,15 @@ window.dashboardContext = {
     REJECTED_NON_QUALIFYING_DISPOSITION: 0,
     GEO_AMBIGUOUS: 0
   },
+  reasonStats: {        // one entry per rejection code, published from evaluated records
+    GEO_AMBIGUOUS: {count: 0, totalKg: 0, modeledDollars: 0, recoverable: true}
+    // out-of-state and nonqualifying disposition use recoverable: false
+  },
+  dataQuality: {       // full batch
+    estimatedWeightCount: 0,
+    missingEvidenceCount: 0, // eligible records without an evidence ID
+    missingOriginCount: 0
+  },
   activeFilter: "all",  // "all" | "eligible" | "rejected"
   selectedItem: null,   // or:
   // { id, category, donorState, disposition, weightG, weightIsEstimated,
@@ -86,6 +95,6 @@ If a field is `null` or a question is out of scope, the agent uses the fallback 
 
 The guide uses the full loaded batch, including when the intake table is filtered. The dashboard publishes `dashboard:context` after batch replacement, filter changes, row selection, and drawer close. The guide reads that object and does not call `evaluate()`.
 
-The published context extends the draft shape with `batch.version`, `batch.eligibleItems`, `quality` (estimated weights and missing evidence IDs on eligible records), and `reasonGroups`. Each reason group contains its count, applied grams, buffered kilograms, a weight-only illustrative credit, example item IDs, and—where applicable—California-origin verification candidates and their conditional credit. The dashboard derives these fields from the evaluated records; the guide only explains them.
+The published context extends the draft shape with `batch.version`, `batch.eligibleItems`, `quality`, `reasonGroups`, `reasonStats`, and `dataQuality`. `reasonStats.totalKg` is raw applied weight, including category benchmarks where needed; `modeledDollars` is that weight × the demo rate. It is not earned credit or a promise of recovery. Only origin-unclear records have `recoverable: true`, conditional on source proof of California origin and the other checks. `reasonGroups` retains buffered conditional-credit and example-ID details. The dashboard derives these fields from evaluated records; the guide only explains them.
 
 The guide treats `GEO_AMBIGUOUS` as reviewable when original California origin is supplied. Out-of-state donor and past nonqualifying-disposition decisions are not recoverable by relabeling. Weight-only dollar illustrations are never presented as earned credit. Evidence IDs in the synthetic sample are mock references rather than verified proof.
