@@ -11,8 +11,12 @@ let batchVersion=0;
 function publishDashboardContext(results,eligibleKg,modeledCredit,reasonCounts){
   const eligible=results.filter(x=>x.code==='ELIGIBLE'),rejected=results.filter(x=>x.code!=='ELIGIBLE');
   const reasonGroups={};
+  const reasonStats={};
   for(const x of rejected){
     const g=reasonGroups[x.code]??={count:0,appliedWeightG:0,creditWeightKg:0,weightOnlyModeledCredit:0,originCandidateCount:0,originConditionalCredit:0,examples:[]};
+    const stat=reasonStats[x.code]??={count:0,totalKg:0,modeledDollars:0,recoverable:x.code==='GEO_AMBIGUOUS'};
+    stat.count++;stat.totalKg+=(x.grams||0)/1000;
+    stat.modeledDollars=stat.totalKg*RATE;
     const adjustedKg=x.grams>0?x.grams/1000*(x.flags.includes('ESTIMATED_WEIGHT')?1-BUFFER:1):0;
     g.count++;g.appliedWeightG+=x.grams||0;g.creditWeightKg+=adjustedKg;
     g.weightOnlyModeledCredit+=adjustedKg*RATE;
@@ -21,7 +25,8 @@ function publishDashboardContext(results,eligibleKg,modeledCredit,reasonCounts){
   }
   window.dashboardContext={
     batch:{version:++batchVersion,items:results.length,eligibleItems:eligible.length,eligibleKg,modeledCredit,rejectedOrReview:rejected.length},
-    reasonCounts,reasonGroups,
+    reasonCounts,reasonGroups,reasonStats,
+    dataQuality:{estimatedWeightCount:results.filter(x=>x.flags.includes('ESTIMATED_WEIGHT')).length,missingEvidenceCount:eligible.filter(x=>!String(x.r.evidence_id||x.r.mock_evidence_id||'').trim()).length,missingOriginCount:results.filter(x=>!x.state).length},
     quality:{estimatedWeightCount:results.filter(x=>x.flags.includes('ESTIMATED_WEIGHT')).length,eligibleEstimatedWeightCount:eligible.filter(x=>x.flags.includes('ESTIMATED_WEIGHT')).length,eligibleMissingEvidenceCount:eligible.filter(x=>!String(x.r.evidence_id||x.r.mock_evidence_id||'').trim()).length},
     activeFilter:filterMode,selectedItem:null,selectedReason:null,rateUsdPerKg:RATE
   };
@@ -57,7 +62,7 @@ function context(){return window.dashboardContext||null}
 function group(ctx,code){return ctx.reasonGroups[code]||{count:0,appliedWeightG:0,creditWeightKg:0,weightOnlyModeledCredit:0,originCandidateCount:0,originConditionalCredit:0,examples:[]}}
 function reasonFrom(q){if(/out.of.state|outside california|non.ca/.test(q))return 'REJECTED_OUT_OF_STATE';if(/geo|ambig|unknown origin|missing origin|donor origin/.test(q))return 'GEO_AMBIGUOUS';if(/disposition|non.qualifying|shred|downcycl|landfill|routing|unverified export/.test(q))return 'REJECTED_NON_QUALIFYING_DISPOSITION';if(/unresolved weight/.test(q))return 'WEIGHT_UNRESOLVED';return null}
 function reasonLabel(code){return REASON_INFO[code]?.label||code.replaceAll('_',' ').toLowerCase()}
-function rankedReasons(ctx){return Object.entries(ctx.reasonCounts).filter(([,n])=>n>0).sort((a,b)=>b[1]-a[1])}
+function rankedReasons(ctx){return Object.entries(ctx.reasonStats).filter(([,stat])=>stat.count>0).sort((a,b)=>b[1].count-a[1].count).map(([code,stat])=>[code,stat.count])}
 function addBubble(message,role='assistant'){const el=document.createElement('div');el.className='bubble '+role;el.textContent=message;$('chat').appendChild(el);$('chat').scrollTop=$('chat').scrollHeight;return el}
 let shownBatchVersion=-1;
 function updateCopilot(){
@@ -84,22 +89,22 @@ function answer(q){
     const [reason,count]=reasons[0],info=REASON_INFO[reason];return bullets(`${whole(count)} ${reasonLabel(reason)} records are the largest issue.`,info?.why||'Inspect the source fields and applied rules.',info?.next||'Review the item trail.');
   }
   if(/recover|correct|resolve|fix/.test(text)){
-    const geo=group(ctx,'GEO_AMBIGUOUS'),out=group(ctx,'REJECTED_OUT_OF_STATE'),disp=group(ctx,'REJECTED_NON_QUALIFYING_DISPOSITION');
-    return bullets(`${whole(geo.count)} origin-review records can be rechecked if you find source proof of California origin.`,`${whole(geo.originCandidateCount)} also pass disposition and weight checks; their conditional credit is ${money(geo.originConditionalCredit)} modeled and illustrative.`,`The ${whole(out.count)} out-of-state and ${whole(disp.count)} past disposition decisions cannot be recovered by relabeling.`,`Improve intake origin capture and future sorting to prevent those rejections.`);
+    const geo=group(ctx,'GEO_AMBIGUOUS'),stats=ctx.reasonStats,review=stats.GEO_AMBIGUOUS||{count:0,recoverable:false};
+    return bullets(`${whole(review.count)} origin-review records can be rechecked if you find source proof of California origin.`,`${whole(geo.originCandidateCount)} also pass disposition and weight checks; their conditional credit is ${money(geo.originConditionalCredit)} modeled and illustrative.`,...Object.entries(stats).filter(([code,stat])=>!stat.recoverable&&stat.count).map(([code,stat])=>`${whole(stat.count)} ${reasonLabel(code)} past decisions cannot be recovered by relabeling.`),'Capture donor origin and evidence at intake; improve future disposition routing.');
   }
   if(/solid|data quality|quality|estimated weight|evidence|proof|missing data/.test(text)){
-    const v=ctx.quality;return bullets(`${whole(v.estimatedWeightCount)} of ${whole(b.items)} records use an estimated weight; ${whole(v.eligibleEstimatedWeightCount)} are eligible.`,`Estimated weights use a category benchmark with a 10% buffer.`,`${whole(v.eligibleMissingEvidenceCount)} eligible records have no evidence ID.`,`Evidence IDs in this sample are mock references, not verified proof. Check source documents before filing.`);
+    const v=ctx.dataQuality;return bullets(`${whole(v.estimatedWeightCount)} of ${whole(b.items)} records use a category benchmark instead of a measured weight.`,`${whole(v.missingEvidenceCount)} eligible records lack an evidence ID; collect resale or repair proof.`,`${whole(v.missingOriginCount)} records lack donor state; verify original origin before re-running them.`,`Evidence IDs in this sample are mock references. Check source documents before filing.`);
   }
   if(/weight|heaviest|most kg|most grams/.test(text)){
-    if(code){const g=group(ctx,code);return bullets(`${whole(g.count)} ${reasonLabel(code)} records hold ${(g.appliedWeightG/1000).toFixed(2)} kg of applied weight.`,`After the estimated-weight buffer, the group has ${g.creditWeightKg.toFixed(2)} kg for a weight-only illustration.`)}
-    const weighted=Object.entries(ctx.reasonGroups).filter(([,g])=>g.count).sort((a,b)=>b[1].appliedWeightG-a[1].appliedWeightG);
+    if(code){const g=ctx.reasonStats[code];return bullets(`${whole(g?.count||0)} ${reasonLabel(code)} records hold ${(g?.totalKg||0).toFixed(2)} kg of applied weight.`,`That rejected weight earned no credit.`)}
+    const weighted=Object.entries(ctx.reasonStats).filter(([,g])=>g.count).sort((a,b)=>b[1].totalKg-a[1].totalKg);
     if(!weighted.length)return bullets('There are no exception groups to compare.');
-    return bullets(`Among exception groups, ${reasonLabel(weighted[0][0])} holds the most applied weight: ${(weighted[0][1].appliedWeightG/1000).toFixed(2)} kg across ${whole(weighted[0][1].count)} items.`,...weighted.slice(1,3).map(([reason,g])=>`${reasonLabel(reason)}: ${(g.appliedWeightG/1000).toFixed(2)} kg across ${whole(g.count)} items.`),'Estimated category weights are included where source weights are missing.');
+    return bullets(`Among exception groups, ${reasonLabel(weighted[0][0])} holds the most applied weight: ${weighted[0][1].totalKg.toFixed(2)} kg across ${whole(weighted[0][1].count)} items.`,...weighted.slice(1,3).map(([reason,g])=>`${reasonLabel(reason)}: ${g.totalKg.toFixed(2)} kg across ${whole(g.count)} items.`),'This rejected weight earned no credit; category benchmarks are included where source weights are missing.');
   }
   if(/model|credit|dollar|\$|offset/.test(text)&&code){
-    const g=group(ctx,code);if(!g.count)return bullets(`No ${reasonLabel(code)} records are in this batch.`);
-    if(code==='GEO_AMBIGUOUS')return bullets(`${whole(g.count)} origin-review items currently earn $0.00.`,`Their buffered weight is ${g.creditWeightKg.toFixed(2)} kg; weight × $0.75/kg is ${money(g.weightOnlyModeledCredit)} (illustrative only).`,`${whole(g.originCandidateCount)} pass the other checks. If California origin is verified, their conditional modeled credit is ${money(g.originConditionalCredit)}.`,`Link original origin evidence and re-run those records.`);
-    return bullets(`${whole(g.count)} ${reasonLabel(code)} items currently earn $0.00.`,`Applied weight: ${(g.appliedWeightG/1000).toFixed(2)} kg. Weight-only illustration: ${money(g.weightOnlyModeledCredit)} at $0.75/kg.`,`That figure is not recoverable credit for these past decisions.`);
+    const stat=ctx.reasonStats[code],g=group(ctx,code);if(!stat?.count)return bullets(`No ${reasonLabel(code)} records are in this batch.`);
+    if(code==='GEO_AMBIGUOUS')return bullets(`${whole(stat.count)} origin-review items currently earn $0.00.`,`Their ${stat.totalKg.toFixed(2)} kg of applied weight × $0.75/kg is ${money(stat.modeledDollars)} modeled, not earned.`,`${whole(g.originCandidateCount)} pass the other checks. If California origin is verified, their conditional modeled credit is ${money(g.originConditionalCredit)} after the estimated-weight buffer.`,`Link original origin evidence and re-run those records.`);
+    return bullets(`${whole(stat.count)} ${reasonLabel(code)} items currently earn $0.00.`,`Applied weight: ${stat.totalKg.toFixed(2)} kg. Weight-only illustration: ${money(stat.modeledDollars)} modeled at $0.75/kg.`,`That figure is not recoverable credit for these past decisions.`);
   }
   if(code&&/why|explain|what does|reason/.test(text)){
     const g=group(ctx,code),info=REASON_INFO[code];return bullets(`${whole(g.count)} records have ${reasonLabel(code)} status.`,info?.why||'Inspect each item’s source and rule trace.',info?.next||'Review the source record.',g.examples.length?`Examples: ${g.examples.join(', ')}.`:'');
